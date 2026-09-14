@@ -1,0 +1,131 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag to build (e.g. v1.0.0)"
+        required: true
+        default: "v0.0.0"
+
+permissions:
+  contents: write
+
+env:
+  ZIG_VERSION: "0.16.0"
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-x86_64
+            target: x86_64-windows
+            ext: .exe
+          - name: linux-x86_64
+            target: x86_64-linux
+            ext: ""
+          - name: linux-aarch64
+            target: aarch64-linux
+            ext: ""
+          - name: macos-x86_64
+            target: x86_64-macos
+            ext: ""
+          - name: macos-aarch64
+            target: aarch64-macos
+            ext: ""
+          - name: android-aarch64
+            target: aarch64-linux-android
+            ext: ""
+          - name: android-x86_64
+            target: x86_64-linux-android
+            ext: ""
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: ${{ env.ZIG_VERSION }}
+
+      - name: Resolve version string
+        id: ver
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.version || github.ref_name }}"
+          SHORT_SHA="$(git rev-parse --short=7 HEAD)"
+          VERSION="${TAG}-${SHORT_SHA}-gh-build"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: ${VERSION}"
+
+      - name: Build
+        run: |
+          zig build -Doptimize=ReleaseSafe \
+            -Dtarget=${{ matrix.target }} \
+            -Dversion="${{ steps.ver.outputs.version }}"
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          BIN="zig-out/bin/vbmeta_patch${{ matrix.ext }}"
+          OUT="dist/vbmeta_patch-${{ matrix.name }}${{ matrix.ext }}"
+          cp "$BIN" "$OUT"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: vbmeta_patch-${{ matrix.name }}
+          path: dist/*
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version string
+        id: ver
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.version || github.ref_name }}"
+          SHORT_SHA="$(git rev-parse --short=7 HEAD)"
+          VERSION="${TAG}-${SHORT_SHA}-gh-build"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Flatten artifacts
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          ls -la release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: "vbmeta_patch ${{ steps.ver.outputs.tag }}"
+          body: |
+            **vbmeta_patch ${{ steps.ver.outputs.version }}**
+
+            Developer: Ditzzy
+
+            Prebuilt binaries for Windows, Linux, macOS and Android (arm64/x86_64).
+            See README.md for usage instructions.
+          files: release/*
+          generate_release_notes: true
